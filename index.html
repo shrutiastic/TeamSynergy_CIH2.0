@@ -1,0 +1,73 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Aries: DeFi Analysis Engine</title>
+    <meta name="description" content="Revolutionizing DeFi Analysis with Intelligence and Insight" />
+    <meta name="author" content="Aries" />
+
+    <meta property="og:title" content="Aries: DeFi Analysis Engine" />
+    <meta property="og:description" content="Revolutionizing DeFi Analysis with Intelligence and Insight" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@lovable_dev" />
+    <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+    
+    <!-- Enhanced SPA Redirect and Error Handling Script -->
+    <script type="text/javascript">
+      // Enhanced SPA redirect handling with fallback mechanisms
+      (function() {
+        // Check if we're being redirected from a 404 page
+        var searchParams = new URLSearchParams(window.location.search);
+        var redirectPath = searchParams.get('redirect');
+        
+        if (redirectPath) {
+          searchParams.delete('redirect');
+          var newSearch = searchParams.toString();
+          var newPath = redirectPath + (newSearch ? '?' + newSearch : '');
+          window.history.replaceState(null, null, newPath);
+        }
+        
+        // Store the current path for React Router
+        window.__INITIAL_PATH__ = window.location.pathname;
+        
+        // Error handling for script loading failures
+        window.addEventListener('error', function(e) {
+          if (e.target && e.target.src && e.target.src.includes('/assets/')) {
+            console.error('Failed to load asset:', e.target.src);
+            // Try to reload the page once
+            if (!window.__RELOAD_ATTEMPTED__) {
+              window.__RELOAD_ATTEMPTED__ = true;
+              setTimeout(function() {
+                window.location.href = '/';
+              }, 1000);
+            }
+          }
+        });
+        
+        // Ensure scripts load properly
+        window.addEventListener('load', function() {
+          // If React hasn't mounted after 5 seconds, redirect to home
+          setTimeout(function() {
+            if (!document.getElementById('root').hasChildNodes()) {
+              console.warn('App failed to mount, redirecting to home');
+              window.location.href = '/';
+            }
+          }, 5000);
+        });
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <!-- IMPORTANT: DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
+    <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
