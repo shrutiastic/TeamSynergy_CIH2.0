@@ -1,0 +1,848 @@
+# Comprehensive Implementation Plan: Real Data Integration for Aries DeFi Platform
+
+## 🎯 Overview
+
+Transform all mocked data in Aries to real-time data using __free, fast, and hackathon-friendly__ APIs and services.
+
+---
+
+## 📋 Phase 1: Real-Time Blockchain Data Integration
+
+__Timeline: 2-3 days__
+
+### 1.1 Price Data Integration
+
+__Tech Stack: CoinGecko API (Free)__
+
+__Implementation Steps:__
+
+1. __Create Price Service__
+
+```typescript
+// src/services/pricing/CoinGeckoService.ts
+class CoinGeckoService {
+  private baseUrl = 'https://api.coingecko.com/api/v3';
+  private cache = new Map();
+  private cacheTTL = 60000; // 1 minute cache
+
+  async getTokenPrice(tokenId: string): Promise<TokenPrice> {
+    const cacheKey = `price_${tokenId}`;
+    const cached = this.cache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
+      return cached.data;
+    }
+
+    const response = await fetch(
+      `${this.baseUrl}/simple/price?ids=${tokenId}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`
+    );
+    const data = await response.json();
+    
+    const priceData = {
+      price: data[tokenId].usd,
+      change24h: data[tokenId].usd_24h_change,
+      marketCap: data[tokenId].usd_market_cap,
+      timestamp: Date.now()
+    };
+    
+    this.cache.set(cacheKey, { data: priceData, timestamp: Date.now() });
+    return priceData;
+  }
+
+  async getHistoricalPrices(tokenId: string, days: number = 30): Promise<HistoricalPrice[]> {
+    const response = await fetch(
+      `${this.baseUrl}/coins/${tokenId}/market_chart?vs_currency=usd&days=${days}`
+    );
+    const data = await response.json();
+    
+    return data.prices.map(([timestamp, price]) => ({
+      timestamp,
+      price,
+      date: new Date(timestamp).toISOString()
+    }));
+  }
+}
+```
+
+2. __Token ID Mapping__
+
+```typescript
+// src/config/tokenMapping.ts
+export const TOKEN_MAPPING = {
+  'ETH': 'ethereum',
+  'BTC': 'bitcoin',
+  'SOL': 'solana',
+  'MATIC': 'matic-network',
+  'AVAX': 'avalanche-2',
+  'DOT': 'polkadot',
+  'LINK': 'chainlink',
+  'UNI': 'uniswap',
+  'AAVE': 'aave',
+  'USDC': 'usd-coin',
+  'USDT': 'tether'
+};
+```
+
+3. __Integration into Dashboard__
+
+```typescript
+// Update src/pages/Dashboard.tsx
+const [portfolioData, setPortfolioData] = useState(null);
+const [loading, setLoading] = useState(true);
+
+useEffect(() => {
+  const fetchRealData = async () => {
+    if (connectionState.connected && connectionState.address) {
+      setLoading(true);
+      try {
+        // Get real token balances
+        const tokens = await blockchainService.getAllTokenBalances(connectionState.address);
+        
+        // Get real prices
+        const enrichedTokens = await Promise.all(
+          tokens.map(async (token) => {
+            const tokenId = TOKEN_MAPPING[token.symbol] || token.symbol.toLowerCase();
+            const priceData = await coinGeckoService.getTokenPrice(tokenId);
+            return {
+              ...token,
+              currentPrice: priceData.price,
+              dailyChange: priceData.change24h,
+              value: parseFloat(token.balance) * priceData.price
+            };
+          })
+        );
+        
+        setPortfolioData({
+          assets: enrichedTokens,
+          totalValue: enrichedTokens.reduce((sum, token) => sum + token.value, 0)
+        });
+      } catch (error) {
+        console.error('Error fetching real portfolio data:', error);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  fetchRealData();
+  // Refresh every 30 seconds
+  const interval = setInterval(fetchRealData, 30000);
+  return () => clearInterval(interval);
+}, [connectionState.connected, connectionState.address]);
+```
+
+### 1.2 Blockchain Data Integration
+
+__Tech Stack: Free APIs (Etherscan, Polygonscan, etc.)__
+
+1. __Free API Keys Setup__
+
+```bash
+# Free API keys (no credit card required)
+VITE_ETHERSCAN_API_KEY=YourFreeEtherscanKey
+VITE_POLYGONSCAN_API_KEY=YourFreePolygonscanKey
+VITE_BSCSCAN_API_KEY=YourFreeBscscanKey
+VITE_COINGECKO_API_KEY=demo-api-key  # Free tier
+```
+
+2. __Multi-Chain Service Enhancement__
+
+```typescript
+// src/services/blockchain/FreeBlockchainService.ts
+class FreeBlockchainService {
+  private apis = {
+    ethereum: 'https://api.etherscan.io/api',
+    polygon: 'https://api.polygonscan.com/api',
+    bsc: 'https://api.bscscan.com/api'
+  };
+
+  async getTokenBalances(address: string, network: string): Promise<Token[]> {
+    const apiUrl = this.apis[network];
+    const apiKey = this.getApiKey(network);
+    
+    // Get ERC20 token transfers to determine balances
+    const response = await fetch(
+      `${apiUrl}?module=account&action=tokentx&address=${address}&startblock=0&endblock=latest&sort=desc&apikey=${apiKey}`
+    );
+    
+    const data = await response.json();
+    return this.processTokenBalances(data.result, network);
+  }
+
+  async getRealTransactions(address: string, network: string): Promise<Transaction[]> {
+    const apiUrl = this.apis[network];
+    const apiKey = this.getApiKey(network);
+    
+    const response = await fetch(
+      `${apiUrl}?module=account&action=txlist&address=${address}&startblock=0&endblock=latest&sort=desc&apikey=${apiKey}`
+    );
+    
+    const data = await response.json();
+    return data.result.slice(0, 50).map(tx => ({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: (parseInt(tx.value) / 1e18).toString(),
+      timestamp: parseInt(tx.timeStamp) * 1000,
+      gasUsed: tx.gasUsed,
+      gasPrice: tx.gasPrice,
+      status: tx.txreceipt_status === '1' ? 'success' : 'failed',
+      blockchain: network,
+      network: 'mainnet'
+    }));
+  }
+}
+```
+
+---
+
+## 📋 Phase 2: Real-Time Risk Analysis
+
+__Timeline: 2-3 days__
+
+### 2.1 Dynamic Portfolio Risk Calculation
+
+__Tech Stack: WebSocket + Real Price Data__
+
+1. __Real-Time Risk Calculator__
+
+```typescript
+// src/services/risk/RealTimeRiskService.ts
+class RealTimeRiskService {
+  private priceService = new CoinGeckoService();
+  private wsConnections = new Map();
+
+  async calculateRealPortfolioRisk(tokens: Token[]): Promise<RiskAnalysis> {
+    // Get historical price data for volatility calculation
+    const historicalData = await Promise.all(
+      tokens.map(async (token) => {
+        const tokenId = TOKEN_MAPPING[token.symbol];
+        if (!tokenId) return null;
+        
+        const prices = await this.priceService.getHistoricalPrices(tokenId, 30);
+        return { token, prices };
+      })
+    );
+
+    // Calculate real volatility
+    const tokenVolatilities = historicalData
+      .filter(data => data !== null)
+      .map(data => {
+        const returns = this.calculateDailyReturns(data.prices);
+        const volatility = this.calculateVolatility(returns);
+        
+        return {
+          symbol: data.token.symbol,
+          volatility,
+          weight: parseFloat(data.token.balance) * data.token.currentPrice
+        };
+      });
+
+    // Calculate portfolio-level risk metrics
+    const totalValue = tokenVolatilities.reduce((sum, t) => sum + t.weight, 0);
+    const portfolioVolatility = this.calculatePortfolioVolatility(tokenVolatilities, totalValue);
+    
+    // Calculate VaR (95% confidence)
+    const dailyVaR = totalValue * portfolioVolatility * 1.645;
+    
+    return {
+      totalValue,
+      portfolioVolatility,
+      dailyVaR,
+      riskScore: Math.min(100, portfolioVolatility * 1000), // Scale to 0-100
+      riskLevel: this.determineRiskLevel(portfolioVolatility),
+      lastUpdated: new Date().toISOString(),
+      tokenBreakdown: tokenVolatilities
+    };
+  }
+
+  private calculateDailyReturns(prices: HistoricalPrice[]): number[] {
+    const returns = [];
+    for (let i = 1; i < prices.length; i++) {
+      const dailyReturn = (prices[i].price - prices[i-1].price) / prices[i-1].price;
+      returns.push(dailyReturn);
+    }
+    return returns;
+  }
+
+  private calculateVolatility(returns: number[]): number {
+    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+    return Math.sqrt(variance);
+  }
+}
+```
+
+2. __WebSocket Price Updates__
+
+```typescript
+// src/services/websocket/PriceWebSocketService.ts
+class PriceWebSocketService {
+  private ws: WebSocket | null = null;
+  private subscribers = new Set<(data: PriceUpdate) => void>();
+
+  connect(symbols: string[]) {
+    // Use free WebSocket from Binance
+    const wsUrl = `wss://stream.binance.com:9443/ws/${symbols.map(s => `${s.toLowerCase()}usdt@ticker`).join('/')}`;
+    
+    this.ws = new WebSocket(wsUrl);
+    
+    this.ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const update = {
+        symbol: data.s.replace('USDT', ''),
+        price: parseFloat(data.c),
+        change24h: parseFloat(data.P),
+        timestamp: Date.now()
+      };
+      
+      this.subscribers.forEach(callback => callback(update));
+    };
+  }
+
+  subscribe(callback: (data: PriceUpdate) => void) {
+    this.subscribers.add(callback);
+    return () => this.subscribers.delete(callback);
+  }
+}
+```
+
+### 2.2 Real-Time Dashboard Updates
+
+```typescript
+// Update Dashboard component
+const Dashboard = () => {
+  const [portfolioRisk, setPortfolioRisk] = useState(null);
+  const [priceUpdates, setPriceUpdates] = useState({});
+
+  useEffect(() => {
+    if (portfolioData) {
+      // Subscribe to real-time price updates
+      const symbols = portfolioData.assets.map(a => a.symbol);
+      const unsubscribe = priceWebSocketService.subscribe((update) => {
+        setPriceUpdates(prev => ({
+          ...prev,
+          [update.symbol]: update
+        }));
+        
+        // Recalculate risk when prices update
+        calculateRiskWithNewPrices(update);
+      });
+
+      priceWebSocketService.connect(symbols);
+      
+      return unsubscribe;
+    }
+  }, [portfolioData]);
+
+  const calculateRiskWithNewPrices = async (priceUpdate) => {
+    const updatedTokens = portfolioData.assets.map(token => ({
+      ...token,
+      currentPrice: priceUpdates[token.symbol]?.price || token.currentPrice,
+      dailyChange: priceUpdates[token.symbol]?.change24h || token.dailyChange
+    }));
+
+    const riskAnalysis = await realTimeRiskService.calculateRealPortfolioRisk(updatedTokens);
+    setPortfolioRisk(riskAnalysis);
+  };
+};
+```
+
+---
+
+## 📋 Phase 3: Real Banking Integration (Free Tier)
+
+__Timeline: 3-4 days__
+
+### 3.1 Open Banking with Plaid (Free Sandbox)
+
+__Tech Stack: Plaid Link (Free Sandbox Mode)__
+
+1. __Plaid Integration Setup__
+
+```bash
+npm install react-plaid-link plaid
+```
+
+2. __Plaid Service Implementation__
+
+```typescript
+// src/services/banking/PlaidService.ts
+class PlaidService {
+  private client: PlaidApi;
+  
+  constructor() {
+    this.client = new PlaidApi(new Configuration({
+      basePath: PlaidEnvironments.sandbox, // Free tier
+      baseOptions: {
+        headers: {
+          'PLAID-CLIENT-ID': import.meta.env.VITE_PLAID_CLIENT_ID,
+          'PLAID-SECRET': import.meta.env.VITE_PLAID_SECRET,
+        },
+      },
+    }));
+  }
+
+  async createLinkToken(userId: string): Promise<string> {
+    const response = await this.client.linkTokenCreate({
+      user: { client_user_id: userId },
+      client_name: 'Aries DeFi Platform',
+      products: ['transactions', 'accounts'],
+      country_codes: ['US'],
+      language: 'en',
+    });
+    
+    return response.data.link_token;
+  }
+
+  async getAccounts(accessToken: string): Promise<BankAccount[]> {
+    const response = await this.client.accountsGet({
+      access_token: accessToken,
+    });
+    
+    return response.data.accounts.map(account => ({
+      id: account.account_id,
+      name: account.name,
+      type: account.type,
+      subtype: account.subtype,
+      balance: account.balances.current || 0,
+      availableBalance: account.balances.available || 0,
+      currency: account.balances.iso_currency_code || 'USD',
+      institution: response.data.item.institution_id,
+      lastUpdated: new Date().toISOString()
+    }));
+  }
+
+  async getTransactions(accessToken: string, startDate: string, endDate: string): Promise<BankTransaction[]> {
+    const response = await this.client.transactionsGet({
+      access_token: accessToken,
+      start_date: startDate,
+      end_date: endDate,
+    });
+    
+    return response.data.transactions.map(tx => ({
+      id: tx.transaction_id,
+      accountId: tx.account_id,
+      amount: tx.amount,
+      date: tx.date,
+      description: tx.name,
+      category: tx.category?.[0] || 'Other',
+      subcategory: tx.category?.[1] || '',
+      merchantName: tx.merchant_name || '',
+      status: 'posted'
+    }));
+  }
+}
+```
+
+3. __Banking Integration Component__
+
+```typescript
+// src/components/RealBankingConnect.tsx
+const RealBankingConnect = () => {
+  const [linkToken, setLinkToken] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const { user } = useUser();
+
+  const onSuccess = async (public_token: string) => {
+    try {
+      // Exchange public token for access token
+      const response = await fetch('/api/banking/exchange-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public_token, user_id: user.id })
+      });
+      
+      const { access_token } = await response.json();
+      
+      // Fetch real account data
+      const accountData = await plaidService.getAccounts(access_token);
+      setAccounts(accountData);
+      
+      // Store access token securely (encrypted)
+      await storeAccessToken(user.id, access_token);
+      
+    } catch (error) {
+      console.error('Error exchanging token:', error);
+    }
+  };
+
+  return (
+    <PlaidLink
+      linkToken={linkToken}
+      onSuccess={onSuccess}
+      onEvent={(eventName, metadata) => {
+        console.log('Plaid event:', eventName, metadata);
+      }}
+      onExit={(err, metadata) => {
+        if (err) console.error('Plaid error:', err);
+      }}
+    >
+      Connect Your Bank Account
+    </PlaidLink>
+  );
+};
+```
+
+### 3.2 Backend Security for Banking Data
+
+```typescript
+// backend/src/services/secure-storage.service.js
+const crypto = require('crypto');
+
+class SecureStorageService {
+  constructor() {
+    this.algorithm = 'aes-256-gcm';
+    this.secretKey = process.env.ENCRYPTION_KEY || crypto.randomBytes(32);
+  }
+
+  encrypt(text) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipher(this.algorithm, this.secretKey, iv);
+    
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      encrypted,
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex')
+    };
+  }
+
+  decrypt(encryptedData) {
+    const decipher = crypto.createDecipher(
+      this.algorithm, 
+      this.secretKey, 
+      Buffer.from(encryptedData.iv, 'hex')
+    );
+    
+    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  }
+}
+```
+
+---
+
+## 📋 Phase 4: Enhanced Smart Contract Analysis
+
+__Timeline: 2-3 days__
+
+### 4.1 Real Contract Analysis with Free APIs
+
+__Tech Stack: Etherscan API + CoinGecko__
+
+1. __Contract Analysis Service__
+
+```typescript
+// src/services/contracts/ContractAnalysisService.ts
+class ContractAnalysisService {
+  async analyzeContract(contractAddress: string, network: string = 'ethereum'): Promise<ContractAnalysis> {
+    // Get contract source code
+    const sourceCode = await this.getContractSource(contractAddress, network);
+    
+    // Get contract interactions
+    const interactions = await this.getContractInteractions(contractAddress, network);
+    
+    // Analyze contract patterns
+    const riskFactors = this.analyzeContractRisks(sourceCode, interactions);
+    
+    // Get contract verification status
+    const verificationStatus = await this.getVerificationStatus(contractAddress, network);
+    
+    return {
+      address: contractAddress,
+      network,
+      isVerified: verificationStatus.isVerified,
+      sourceCode: verificationStatus.isVerified ? sourceCode : null,
+      riskScore: this.calculateRiskScore(riskFactors),
+      riskFactors,
+      totalInteractions: interactions.length,
+      uniqueInteractors: new Set(interactions.map(i => i.from)).size,
+      lastActivity: Math.max(...interactions.map(i => i.timestamp)),
+      analysis: {
+        hasOwnership: riskFactors.includes('OWNERSHIP_CONCENTRATED'),
+        hasPausable: riskFactors.includes('PAUSABLE_FUNCTIONS'),
+        hasUpgradeable: riskFactors.includes('UPGRADEABLE_PROXY'),
+        hasTimelock: riskFactors.includes('TIMELOCK_PRESENT'),
+        externalDependencies: this.findExternalDependencies(sourceCode)
+      }
+    };
+  }
+
+  private async getContractSource(address: string, network: string): Promise<string> {
+    const apiUrl = this.getApiUrl(network);
+    const apiKey = this.getApiKey(network);
+    
+    const response = await fetch(
+      `${apiUrl}?module=contract&action=getsourcecode&address=${address}&apikey=${apiKey}`
+    );
+    
+    const data = await response.json();
+    return data.result[0]?.SourceCode || '';
+  }
+
+  private analyzeContractRisks(sourceCode: string, interactions: any[]): string[] {
+    const risks = [];
+    
+    // Check for common risk patterns
+    if (sourceCode.includes('onlyOwner')) risks.push('OWNERSHIP_CONCENTRATED');
+    if (sourceCode.includes('pause') || sourceCode.includes('Pausable')) risks.push('PAUSABLE_FUNCTIONS');
+    if (sourceCode.includes('upgrade') || sourceCode.includes('proxy')) risks.push('UPGRADEABLE_PROXY');
+    if (sourceCode.includes('timelock') || sourceCode.includes('TimeLock')) risks.push('TIMELOCK_PRESENT');
+    if (sourceCode.includes('selfdestruct')) risks.push('SELF_DESTRUCT');
+    
+    // Analyze interaction patterns
+    const recentInteractions = interactions.filter(i => 
+      Date.now() - i.timestamp < 7 * 24 * 60 * 60 * 1000 // Last 7 days
+    );
+    
+    if (recentInteractions.length < 10) risks.push('LOW_ACTIVITY');
+    
+    const uniqueInteractors = new Set(interactions.map(i => i.from)).size;
+    if (uniqueInteractors < 50) risks.push('LIMITED_USER_BASE');
+    
+    return risks;
+  }
+}
+```
+
+2. __Real-Time Contract Monitoring__
+
+```typescript
+// src/services/contracts/ContractMonitoringService.ts
+class ContractMonitoringService {
+  private monitoredContracts = new Set();
+  private alerts = [];
+
+  async monitorContractActivity(contractAddress: string) {
+    this.monitoredContracts.add(contractAddress);
+    
+    // Set up real-time monitoring using WebSocket
+    const wsUrl = `wss://eth-mainnet.alchemyapi.io/v2/${process.env.ALCHEMY_API_KEY}`;
+    const ws = new WebSocket(wsUrl);
+    
+    ws.on('open', () => {
+      // Subscribe to contract events
+      ws.send(JSON.stringify({
+        id: 1,
+        method: 'eth_subscribe',
+        params: ['logs', { address: contractAddress }]
+      }));
+    });
+
+    ws.on('message', (data) => {
+      const event = JSON.parse(data);
+      if (event.params) {
+        this.analyzeContractEvent(contractAddress, event.params.result);
+      }
+    });
+  }
+
+  private analyzeContractEvent(contractAddress: string, event: any) {
+    // Analyze the event for risk indicators
+    const riskIndicators = this.detectRiskInEvent(event);
+    
+    if (riskIndicators.length > 0) {
+      this.createAlert({
+        contractAddress,
+        type: 'RISK_DETECTED',
+        indicators: riskIndicators,
+        timestamp: Date.now(),
+        severity: this.calculateSeverity(riskIndicators)
+      });
+    }
+  }
+}
+```
+
+---
+
+## 📋 Phase 5: Real-Time Data Architecture
+
+__Timeline: 1-2 days__
+
+### 5.1 Caching & Performance Optimization
+
+```typescript
+// src/services/cache/CacheService.ts
+class CacheService {
+  private cache = new Map();
+  private readonly TTL = {
+    PRICE_DATA: 30000,      // 30 seconds
+    BALANCE_DATA: 60000,    // 1 minute
+    TRANSACTION_DATA: 300000, // 5 minutes
+    CONTRACT_DATA: 3600000   // 1 hour
+  };
+
+  set(key: string, value: any, category: keyof typeof this.TTL) {
+    this.cache.set(key, {
+      value,
+      timestamp: Date.now(),
+      ttl: this.TTL[category]
+    });
+  }
+
+  get(key: string): any | null {
+    const item = this.cache.get(key);
+    if (!item) return null;
+    
+    if (Date.now() - item.timestamp > item.ttl) {
+      this.cache.delete(key);
+      return null;
+    }
+    
+    return item.value;
+  }
+}
+```
+
+### 5.2 Background Data Sync
+
+```typescript
+// src/services/sync/BackgroundSyncService.ts
+class BackgroundSyncService {
+  private syncIntervals = new Map();
+
+  startPortfolioSync(walletAddress: string) {
+    const syncKey = `portfolio_${walletAddress}`;
+    
+    if (this.syncIntervals.has(syncKey)) {
+      return; // Already syncing
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        // Sync token balances
+        const tokens = await blockchainService.getAllTokenBalances(walletAddress);
+        
+        // Sync prices
+        const enrichedTokens = await Promise.all(
+          tokens.map(async (token) => {
+            const priceData = await coinGeckoService.getTokenPrice(token.symbol);
+            return { ...token, ...priceData };
+          })
+        );
+
+        // Calculate and cache risk data
+        const riskData = await realTimeRiskService.calculateRealPortfolioRisk(enrichedTokens);
+        
+        // Emit update event
+        this.emitPortfolioUpdate(walletAddress, {
+          tokens: enrichedTokens,
+          risk: riskData,
+          lastUpdated: Date.now()
+        });
+        
+      } catch (error) {
+        console.error('Background sync error:', error);
+      }
+    }, 30000); // Every 30 seconds
+
+    this.syncIntervals.set(syncKey, interval);
+  }
+
+  stopPortfolioSync(walletAddress: string) {
+    const syncKey = `portfolio_${walletAddress}`;
+    const interval = this.syncIntervals.get(syncKey);
+    
+    if (interval) {
+      clearInterval(interval);
+      this.syncIntervals.delete(syncKey);
+    }
+  }
+}
+```
+
+---
+
+## 🚀 Implementation Timeline & Priorities
+
+### __Week 1: Core Data Integration__
+
+- __Day 1-2__: Price data integration (CoinGecko)
+- __Day 3-4__: Real blockchain data (Free APIs)
+- __Day 5-7__: Dynamic portfolio calculation
+
+### __Week 2: Advanced Features__
+
+- __Day 1-3__: Real-time risk analysis
+- __Day 4-5__: Banking integration (Plaid sandbox)
+- __Day 6-7__: Contract analysis enhancement
+
+### __Week 3: Polish & Performance__
+
+- __Day 1-2__: WebSocket integration
+- __Day 3-4__: Caching & optimization
+- __Day 5-7__: Testing & debugging
+
+---
+
+## 💰 Cost Breakdown (All Free Tiers)
+
+| Service | Free Tier Limit | Usage | |---------|-----------------|-------| | CoinGecko API | 50 calls/minute | Price data | | Etherscan API | 5 calls/second | Blockchain data | | Plaid Sandbox | Unlimited | Banking (test data) | | Binance WebSocket | Unlimited | Real-time prices | | Alchemy (Free) | 300M requests/month | Blockchain queries |
+
+__Total Cost: $0__ for hackathon demonstration
+
+---
+
+## 🔧 Quick Start Implementation
+
+### Step 1: Environment Setup
+
+```bash
+# .env file
+VITE_COINGECKO_API_KEY=demo-api-key
+VITE_ETHERSCAN_API_KEY=YourFreeKey
+VITE_PLAID_CLIENT_ID=YourPlaidClientId
+VITE_PLAID_SECRET=YourPlaidSecret
+VITE_ALCHEMY_API_KEY=YourAlchemyKey
+```
+
+### Step 2: Install Dependencies
+
+```bash
+npm install react-plaid-link plaid ws
+```
+
+### Step 3: Quick Win - Price Integration
+
+```typescript
+// Replace mock data in Dashboard.tsx with:
+const [realPrices, setRealPrices] = useState({});
+
+useEffect(() => {
+  const fetchPrices = async () => {
+    const symbols = ['bitcoin', 'ethereum', 'solana'];
+    const prices = await Promise.all(
+      symbols.map(async (symbol) => {
+        const response = await fetch(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd&include_24hr_change=true`
+        );
+        const data = await response.json();
+        return { symbol, ...data[symbol] };
+      })
+    );
+    
+    setRealPrices(
+      prices.reduce((acc, price) => ({
+        ...acc,
+        [price.symbol]: price
+      }), {})
+    );
+  };
+
+  fetchPrices();
+  const interval = setInterval(fetchPrices, 30000);
+  return () => clearInterval(interval);
+}, []);
+```
+
+This plan provides a complete roadmap to transform Aries from a demo to a functional platform using entirely free services, perfect for hackathon presentation with real data integration.
